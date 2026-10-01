@@ -1,0 +1,2 @@
+id,feature,robochart,python,inputs,python_output,types,datatypes,output_type,functions,function_definitions
+typed_boolean_sequence/000,typed_boolean_sequence,flags[2],,"{""flags"": [true, false]}","{""value"": false}","{""flags"": ""Seq(boolean)""}",{},boolean,,

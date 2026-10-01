@@ -1,0 +1,1001 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Testsuite generator validation: claims</title>
+<style>
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; line-height: 1.65; }
+body { max-width: 1100px; margin: 0 auto; padding: 2rem; }
+h1, h2, h3 { line-height: 1.25; }
+h2 { margin-top: 2.2rem; border-bottom: 1px solid #8886; padding-bottom: .4rem; }
+a { color: light-dark(#1756a9, #91bfff); }
+code { background: #8882; padding: .15em .3em; border-radius: .2em; }
+pre { overflow-x: auto; padding: 1rem; background: #8881; }
+pre code { padding: 0; background: none; }
+table { display: block; overflow-x: auto; border-collapse: collapse; margin: 1.2rem 0; }
+th, td { border: 1px solid #8886; padding: .55rem .75rem; text-align: left; }
+th { background: #8882; }
+.mermaid { text-align: center; }
+.mermaid svg { max-width: none !important; min-width: 900px; }
+.math { overflow-wrap: normal; }
+div.math { overflow-x: auto; padding: .5rem 0; }
+.render-error { color: light-dark(#a00000, #ffaaaa); }
+@media print { body { max-width: none; padding: 0; } .mermaid svg { min-width: 0; max-width: 100% !important; } }
+</style>
+<script>
+window.MathJax = {
+  tex: { inlineMath: [['$', '$']], displayMath: [['$$', '$$']] },
+  options: { skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'] }
+};
+</script>
+<script defer src="https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-chtml.js"></script>
+</head>
+<body>
+<main>
+<h1 id="case-generator-validation-claims">Testsuite generator validation: claims</h1>
+<p>This note lists what the property tests and the source-mutation campaign
+establish about the RoboChart testsuite generator and its corpus. It does not claim
+that any expected output is correct. Every claim is relative to the current
+generator, the oracle (RoboTool 1.2.2026062401 plus FDR 4.2.7), and, for the
+campaign, the rows that currently verify. The system under test is the
+RoboChart-to-Python translator. Corpus expectations must come from running
+that translator’s Python output with its actual runtime; RoboTool and FDR
+check whether the source model agrees with those observations.</p>
+<p>The claims come in three groups:</p>
+<ol>
+<li><strong>Generator properties (G1–G31).</strong> Property tests of the generator itself
+   and of the whole pipeline.
+   None uses a reference implementation. Each relates the generator to itself
+   through a round trip, a metamorphic relation (a related input must give a
+   related output), consistency between two of its parts, injectivity, or
+   acceptance and rejection of rows that are well formed, or faulty, by
+   construction.</li>
+<li><strong>Mutation campaign claims (C1–C4).</strong> What running mutated rows through
+   RoboTool and FDR shows about whether each row's context tests its
+   expression or statement, and which surviving mutants are genuinely
+   equivalent.</li>
+<li><strong>Mutation tool claims (T1–T5).</strong> Checks that the campaign's own mutants
+   are sound, so that C1–C3 can be trusted.</li>
+</ol>
+<p>The generator properties have passed the runs recorded under <a href="#results">Results</a>.
+Campaign and equivalence findings depend on the run and finite domains; C4
+is a classification procedure, with inconclusive outcomes, rather than a
+guarantee that every pair is decided. G28 found two generator defects, now fixed.</p>
+<h2 id="where-things-live">Where things live</h2>
+<p>This note was written in a single repository and is now kept with the
+mutation tool. Three repositories hold the parts:</p>
+<ul>
+<li>the testsuite, <a href="https://github.com/twright/robochart-python-testsuite">https://github.com/twright/robochart-python-testsuite</a>, with the rows (<code>data/cases.csv</code>,
+<code>data/statement_cases.csv</code>, <code>data/supplementary_expression_cases.csv</code>) and
+the generated RoboChart project;</li>
+<li>the tools, <a href="https://github.com/twright/robochart-testsuite-generator">https://github.com/twright/robochart-testsuite-generator</a>, with the generator and the verification runner, whose
+property tests are the generator properties G1–G31 below (their file names
+are paths in that repository);</li>
+<li>this repository, with the mutation tool (<code>mutate</code>), this note and the reviewed
+equivalence file <code>docs/mutation-equivalent.csv</code>.</li>
+</ul>
+<p>Directories named <code>target/…</code> in the historical results below are the build
+directories of the original repository, where each run's artefacts were kept;
+they were not carried over. The current summary of the full campaign is in the
+<code>README.md</code> of this repository.</p>
+<h2 id="terms">Terms</h2>
+<ul>
+<li><strong>Row.</strong> One line of <code>data/cases.csv</code> or <code>data/statement_cases.csv</code> of the testsuite. It has
+  three parts: the <em>source</em> (the <code>robochart</code> column: one expression or
+  statement), the <em>fixture</em> (inputs, types, records, driver events, constants,
+  iteration and domains), and the <em>expectation</em> (the expected output value, or
+  the expected final state and event trace).</li>
+<li><strong>Generator.</strong> Turns a row into a RoboChart <em>model</em>, which embeds the source,
+  and an FDR <em>check script</em>, which asserts that the model's CSP translation
+  produces the expectation. A row <em>passes</em> when FDR confirms that assertion for
+  RoboTool's translation.</li>
+<li><strong>Fixture encoders.</strong> The generator's two functions that write a fixture
+  value as a RoboChart literal (in the model) and as a CSP literal (in the
+  check script).</li>
+<li><strong>Well formed by construction.</strong> A test row built so that every variable
+  has a type and an initial value, every observed variable has an expected
+  value, every event is declared, and every driver step binds a variable of
+  the right type.</li>
+<li><strong>Baseline.</strong> The rows that currently pass with expected status <code>pass</code>: 294
+  rows in the campaign.</li>
+<li><strong>Mutant.</strong> A copy of a row with one small change to its source, made by one
+  <em>operator</em> (for example, replacing <code>&gt;</code> with <code>&gt;=</code>) at one <em>site</em> (one
+  subexpression or statement). The fixture and expectation stay the same.</li>
+<li><strong>Outcome of a mutant.</strong> <em>Killed</em>: FDR reports that the check fails (a
+  refinement counterexample). <em>Survived</em>: the check still passes. <em>Detected by
+  evaluation error</em>: the log identifies a CSP evaluation failure, for example
+  division by zero. <em>Inconclusive</em>: bounds instability, timeout, load failure
+  or another oracle/harness error; this is not a detection. <em>Stillborn</em>: the
+  generator or RoboTool rejects the mutant.</li>
+<li><strong>Fault class.</strong> One mutation (the same operator at the same site of the same
+  source text), taken over every baseline row of a feature that shares that
+  source text.</li>
+</ul>
+<h2 id="1-generator-properties">1. Generator properties</h2>
+<p>Checked by property tests on randomly generated record schemas, fixture values
+and rows: in the code repository, mostly <code>crates/testsuite-generator/src/tests/generator_properties.rs</code>, with
+G24 in <code>crates/testsuite-runner/src/tests/preparation_properties.rs</code> and G26 in
+<code>crates/robotool-harness/src/tests/robotool_harness.rs</code>.</p>
+<h3 id="fixture-values">Fixture values</h3>
+<p><strong>G1 — Different values get different literals.</strong> For any type, two different
+values produce different CSP literals and different RoboChart literals. No
+information about a value is lost when it is written into a model or a check.</p>
+<p><strong>G2 — Literals follow declaration order, not names.</strong> Renaming every record
+type and field, to names that sort in the opposite order, leaves every CSP
+literal unchanged and renames the RoboChart literal. So a record's CSP tuple
+lists its fields in the order the row declares them. This is the order
+RoboTool uses. It does not depend on how the names sort.</p>
+<p><strong>G3 — The two encoders agree.</strong> Erasing the record names and field labels
+from a value's RoboChart literal gives its CSP literal, ignoring spacing. The
+model's initial values and the check's expected values describe the same
+structure.</p>
+<p><strong>G4 — The two encoders accept the same values.</strong> Every generated value of a
+type is accepted. After one small structural fault (a missing or extra field,
+a wrong kind of JSON value, a negative natural number), the RoboChart and CSP
+encoders either both accept the value or both reject it.</p>
+<p><strong>G5 — Cyclic record definitions are rejected.</strong> A schema built without cycles
+is accepted. Adding one field that makes a record contain itself, even inside
+a sequence, makes it rejected.</p>
+<h3 id="statement-rows">Statement rows</h3>
+<p><strong>G6 — Well-formed rows are accepted.</strong> Every row that is well formed by
+construction generates a model.</p>
+<p><strong>G7 — Every value uses the fixture encoding.</strong> Each value that the generator
+writes into the model or the check is the fixture encoders' literal for the
+corresponding row value:</p>
+<ul>
+<li>each variable's initial value, declared <code>const</code> exactly when it is a
+  constant;</li>
+<li>the constants passed to the CSP process, in name order;</li>
+<li>the expected final state, in the order of the <code>observe</code> list;</li>
+<li>each expected event payload, in trace order;</li>
+<li>each driver payload, in script order.</li>
+</ul>
+<p>The model also contains the declaration of every record in <code>datatypes</code>.</p>
+<p><strong>G8 — The source is embedded once, and nothing else depends on it.</strong> Replacing
+the row's source text changes the generated model only where the source is
+embedded, and changes nothing in the check.</p>
+<p><strong>G9 — Renaming a variable renames the model.</strong> Renaming one variable
+everywhere in the row gives the same model with that variable renamed (up to
+the order of declarations, which are listed by name). The check is unchanged.</p>
+<p><strong>G10 — Permuting the observation permutes the check.</strong> Reordering the
+<code>observe</code> list reorders the observation record, the output action and the
+expected tuple in the same way.</p>
+<p><strong>G11 — The check depends on the expected state, not the initial state.</strong>
+Changing the expected final value of an observed variable changes the
+expected tuple. Changing a variable's initial value changes the model but
+leaves the expected tuple and events unchanged.</p>
+<p><strong>G12 — The expected status changes only the expected status.</strong> A row marked
+<code>mismatch</code> generates the same model and the same expected tuple and events as
+the same row marked <code>pass</code>.</p>
+<p><strong>G13 — Bounded iteration is unrolling.</strong> A row with <code>iteration</code> of count
+<code>n</code> generates the same model as the row with the body written out <code>n</code> times
+by hand (<code>i = 1; body₁; …; i = n; bodyₙ</code>), apart from a comment.</p>
+<p><strong>G14 — Unobserved variables do not affect the check.</strong> Adding a variable that
+is not observed adds its declaration and changes nothing else.</p>
+<p><strong>G15 — Single faults are rejected.</strong> Each of 14 targeted faults, applied to a
+well-formed row, makes the generator reject it. The faults include:</p>
+<ul>
+<li>a variable without a type, or a state entry that is not observed;</li>
+<li>a duplicated or empty <code>observe</code> list;</li>
+<li>an undeclared or mistyped expected event;</li>
+<li>a driver step that binds a constant;</li>
+<li>an iteration count above 64;</li>
+<li>a record named <code>Obs</code>;</li>
+<li>an invalid expected status;</li>
+<li>input events without a driver;</li>
+<li>an event named <code>output</code>;</li>
+<li>an ill-typed initial value;</li>
+<li>a constant that is not an input.</li>
+</ul>
+<p><strong>G16 — No input makes the generator panic.</strong> Arbitrary text in any JSON
+column gives either a model or an error.</p>
+<p><strong>G17 — Every part of a row matters.</strong> Changing any one part of a
+well-formed row changes what the generator produces, or makes it reject the
+row. The parts are: a record field's type, a record declaration (added,
+removed or with a field renamed), a driver payload, an expected event payload,
+whether a variable is constant, the iteration count, an event's payload type,
+the set of observed variables, an initial value, an expected final value, and
+the source. No part of a row is silently ignored, with one exception: when
+the iteration count is 0, the body is unrolled zero times, so the source never
+reaches the model and changing it changes nothing.</p>
+<h3 id="expression-rows">Expression rows</h3>
+<p><strong>G18 — Typed expression rows use the fixture encoding.</strong> Each input is
+declared as a constant with its RoboChart literal and passed to the CSP process
+as its CSP literal, in name order. The expected value is the output's CSP
+literal. The expression appears verbatim in the output action.</p>
+<p><strong>G19 — Untyped inputs are declared and passed consistently.</strong> For untyped
+expression rows, whose input types are inferred from their JSON values
+(integers, Booleans, sequences and sets of integers), every row is accepted.
+Each input is declared once as a constant. The literal in its declaration is
+the argument passed for it to the CSP process, in name order.</p>
+<p><strong>G20 — Untyped outputs and inputs are independent and injective.</strong> Changing
+the expected output leaves the inputs' declarations and arguments unchanged,
+and a different output of the same kind gives a different expected value.
+Changing an input leaves the expected value unchanged, and a different input
+value gives a different argument.</p>
+<p><strong>G21 — An output that copies an input matches it.</strong> When the expected output
+equals one of the inputs, the output channel has that input's declared type,
+and the expected value is that input's argument.</p>
+<p><strong>G22 — Untyped expressions are embedded verbatim.</strong> Replacing the expression
+changes only the output action.</p>
+<p><strong>G23 — Untyped rows never make the generator panic.</strong> Arbitrary text in the
+input or output column gives either a model or an error.</p>
+<h3 id="fdr-context">FDR context</h3>
+<p><strong>G24 — Preparing the FDR context is idempotent, and its domains cover the
+row.</strong> Running <code>prepare_fdr</code> twice gives the same files as running it once.
+The resulting integer and natural-number domains contain every integer that
+appears in the row's initial values, expected state, events, driver and
+iteration indices. The sequence bound is exactly the longest sequence among
+those values (and at least 2): large enough, and not inflated by driver
+scripts or event traces, which are lists of steps rather than values. The
+preparation leaves RoboTool's arithmetic operator definitions untouched, and
+annotates each section of <code>instantiations.csp</code> it rewrites (the integer and
+natural-number bounds, and the table's helper functions) as
+<code>-- generate &lt;name&gt; not</code>, which RoboTool keeps when it regenerates the CSP.</p>
+<p><strong>G25 — CSV snapshots round trip.</strong> Copying every row of a CSV file
+reproduces it exactly. Copying a selection of ids reproduces exactly those rows,
+in their original order.</p>
+<p><strong>G26 — Sequence widening changes only bounds.</strong> Widening the sequence bounds
+in generated CSP changes only numerals. Doing it twice gives the same text as
+doing it once. When the requested bound is at most the default of 2, it
+changes nothing.</p>
+<h3 id="whole-pipeline">Whole pipeline</h3>
+<p>These two properties run the built generator binary
+(in the code repository, <code>crates/testsuite-runner/src/tests/pipeline_properties.rs</code>).</p>
+<p><strong>G27 — No row is dropped.</strong> For random CSV files mixing well-formed rows and
+rows given one deliberate fault, every input row becomes exactly one generated
+case or exactly one recorded generation failure, and exactly the faulty rows
+fail. Each generated case has its model and check script, and the project's
+source snapshot equals the input.</p>
+<p><strong>G28 — RoboTool translates every generated model, and FDR confirms trivially
+known expectations.</strong> Take random well-formed rows whose expected result
+follows from the fixture alone:</p>
+<ul>
+<li>statement rows whose body is <code>skip</code>, expecting the initial state updated by
+  each driver binding and by the iteration index, and no events;</li>
+<li>expression rows whose expression is one of their inputs, expecting that
+  input's value.</li>
+</ul>
+<p>RoboTool translates every such row, and FDR confirms each expectation. This
+exercises the record layout, the driver wiring and the observation record
+against the real tools. It does not exercise the order of constant arguments:
+RoboTool takes a constant's value from its initialiser in the model and
+ignores the argument passed to the CSP process, and generated models always
+initialise their constants. Rows are limited to types whose finite domains
+have at most 1,000 values.</p>
+<h3 id="regressions">Regressions</h3>
+<p><strong>G29 — No literal contains <code>&lt;-</code>.</strong> Both RoboChart and CSPm read <code>&lt;-</code> as a
+single token, so a sequence written as <code>&lt;-1&gt;</code> does not parse in either
+language. No RoboChart or CSP literal the generator writes contains <code>&lt;-</code>, for
+typed values and for untyped expression rows. This fast property was added
+after G28 found the defect, and it fails on the unfixed generator.</p>
+<h3 id="lambda-rows">Lambda rows</h3>
+<p>The RoboChart context observes a function-valued expression through its
+graph at the supplied <code>apply</code> arguments. For each argument <code>a</code>,
+<code>rimage((expression), {a})</code> yields a singleton value set if defined and the
+empty set otherwise. The FDR check observes the argument and its graph slice.
+This preserves the source expression and uses RoboTool's relation toolkit;
+it avoids applying a named function constant (B1).</p>
+<p>Each of the six existing lambda rows supplies one argument and a recorded
+Python application result in <code>python_output.value</code>. The generator copies
+that value into the expected singleton set. It does not evaluate the lambda
+body or change any corpus expectation. All six pass with this context and
+with widened bounds; logs are in <code>target/lambda-context/</code>.</p>
+<p>An optional explicit <code>{"graph": [{"arg": ..., "defined": ..., "value": ...}]}</code>
+format supports several arguments and undefined observations. Its properties
+use synthetic generator fixtures. No corpus row uses it. The existing
+partial-lambda rows cover only arguments inside the domain; the corpus cannot
+claim to test domain exclusion without recorded Python observations there.
+The context currently supports direct unary integer lambdas with integer
+observations, not arbitrary higher-order result types or a complete graph
+outside the supplied arguments.</p>
+<p><strong>G30 — A lambda row's check lists its supplied graph observations.</strong> The
+model embeds the source once in <code>rimage</code>, independently of the expected
+values. The check has exactly one branch per argument: <code>{value}</code> when defined
+and <code>{}</code> otherwise. Changing a point changes only its expectation.</p>
+<p><strong>G31 — Graph observations must match the arguments.</strong> Arguments and graph
+points must be unique and give exactly one observation per argument. A scalar
+application result requires exactly one argument. Ambiguous observations are
+rejected.</p>
+<h2 id="2-mutation-campaign-claims">2. Mutation campaign claims</h2>
+<p>The campaign mutates the source of every baseline row, runs each mutant
+through the unchanged generator, RoboTool and FDR, and compares the outcome with
+the unmutated row in the same run. G8 guarantees that a mutant's model differs
+from its row's model only in the source, and that its check is the row's check.</p>
+<p><strong>C1 — A killed source mutant identifies a distinguishable Python-translation
+fault pattern.</strong> The mutant keeps the original row's fixture and recorded
+Python expectation. Under G8, only its embedded RoboChart source changes.
+FDR rejects that expectation for the mutant's oracle model, while the
+original passes. This establishes that the row distinguishes those source
+behaviours under the oracle's finite semantics.</p>
+<p>If the Python translator, when translating the original source, produced an
+observed result matching that mutant's oracle behaviour in this fixture, the
+row would expose the disagreement with the original RoboChart model. This
+is conditional evidence of test sensitivity. The campaign mutates RoboChart
+source, not the Python translator, and does not demonstrate an actual
+translator defect or a kill rate for mutations to its implementation.</p>
+<p>For an expression, let <code>p_r</code> be the recorded translator output, and <code>o_r</code>
+and <code>o_m</code> the original and mutant outputs under the oracle at stable bounds.
+A kill establishes <code>o_r = p_r</code> and <code>o_m != p_r</code>. A Python translation fault
+producing <code>o_m</code> would therefore disagree with the original source's oracle
+output. For statements, the observation includes the final state and event
+trace checked by FDR. Nondeterministic behaviours require interpreting this
+relation through the check's failures-divergences refinement, rather than
+through a single value.</p>
+<p>Recognised evaluation errors are reported separately. They show an oracle
+execution failure of the mutant, not a refinement counterexample. Counting
+them as detection assumes the corresponding Python fault would also fail
+observably. Bounds-dependent verdicts, timeouts and oracle load failures do
+not support that inference and are inconclusive.</p>
+<p><strong>C2 — A surviving mutant shows the row cannot tell the difference.</strong> If a
+mutant still passes the row's check, then the row's inputs and expected output
+cannot distinguish the original source from the mutant. A Python translator that
+produced the same checked observation as the mutant on these inputs would
+pass this row against the original source oracle. There are
+two possible reasons:</p>
+<ul>
+<li>the mutant is <em>equivalent</em> on these inputs, for example because it changes
+  code the row never evaluates;</li>
+<li>the row's inputs are too weak to expose that kind of fault.</li>
+</ul>
+<p>Survivors judged equivalent are listed with a reason in
+<code>docs/mutation-equivalent.csv</code>. The rest point to rows that need stronger
+inputs.</p>
+<p><strong>C3 — Adequacy is measured per row and per fault class.</strong> For one row, the
+mutation score is</p>
+<p>$$\text{row score} = \frac{\text{killed}}{\text{killed} + \text{survived}}.$$</p>
+<p>A single row tests one input point, so a low row score is expected. The measure
+that bears on finding translator faults is at the suite level. A fault class is
+<em>detected</em> when at least one row sharing its source text kills it. The suite
+score is</p>
+<p>$$\text{suite score} = \frac{\text{detected fault classes}}{\text{all fault classes} - \text{equivalent fault classes}},$$</p>
+<p>reported both with detection by counterexample only and with evaluation errors
+included.</p>
+<p><strong>C4 — Contextual checks classify surviving source mutants, or report an
+inconclusive result.</strong> Two sources are
+<em>contextually equivalent</em> when no context distinguishes them. For this
+fragment, a context can only choose the values the source reads and observe
+the values and events it produces. The actions are deterministic and run to
+completion inside one transition, and a statement placed before the source
+only produces some starting state. So one <em>most general context</em> covers every
+context within the finite domains:</p>
+<ul>
+<li>every constant is left free, as a parameter of the CSP process, and ranges
+  over its input domain;</li>
+<li>every variable is read through an input event before the action, over its
+  input domain;</li>
+<li>every variable and every event is observed.</li>
+</ul>
+<p>The original and the mutant are placed in two modules of one RoboChart
+package, so that they share types. FDR checks refinement in both directions,
+after renaming the mutant's channels to the original's. Both passing means the
+two are equivalent within the domains, under the oracle's semantics. Oracle
+bugs can affect both equivalence and distinguishing witnesses (A7). A failure
+comes with a counterexample trace whose first events are the distinguishing
+inputs: a concrete context, and effectively the row the corpus is missing.</p>
+<p>A mutant that raises an evaluation error (such as division by zero) in a
+context where the original does not is <em>distinguished by error</em>. When the
+original itself fails in some context, the context can violate a source
+precondition or an oracle type/value restriction. The verdict is <em>inconclusive</em>.</p>
+<p>The integer input range contains the row's recorded integer values, extends
+by one on each side and includes −2…2. The initial FDR integer type is twice
+that range (plus one for set-valued cases), followed by attempted
+expression-based sizing. Equivalence checks use the prepared type without
+the single-case runner's widening recheck, so A7 still applies.</p>
+<p>The recorded full equivalence run used sequence input generators that
+preparation expanded to the output sequence bound, typically 4, and did not
+honour explicit sequence-value lists in the context. These defects explain
+its inconclusive <code>bounded_scan</code> and <code>typed_boolean_sequence</code> pairs.</p>
+<p>The current context generator uses explicit value choices for constant and
+event inputs. Its <code>mgc_seq</code> wrapper keeps the selected input length independent
+of output-type widening and includes recorded input lengths. An unconditional
+direct sequence index supplies a minimum length from the original expression;
+mutants do not supply that precondition. Both equivalence modules receive the
+same type-domain restrictions. The targeted rerun in
+<code>target/context-equivalence-final/</code> distinguishes the bounded-scan substitution
+and detects the Boolean-sequence index mutation by evaluation error, while
+both parenthesised controls verify. Other preconditions are not inferred.
+The earlier full-run counts below remain a historical snapshot.</p>
+<h3 id="operator-families">Operator families</h3>
+<p>Each construct of the corpus's RoboChart fragment gets operators that preserve
+types:</p>
+<table>
+<thead>
+<tr>
+<th>Family</th>
+<th>Construct</th>
+<th>Mutation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AOR</td>
+<td>arithmetic <code>+ - * / %</code></td>
+<td>replace with another arithmetic operator</td>
+</tr>
+<tr>
+<td>ROR</td>
+<td>comparison</td>
+<td>replace among <code>&lt; &lt;= &gt; &gt;= == !=</code> for integers; only <code>==</code>/<code>!=</code> for other types</td>
+</tr>
+<tr>
+<td>LOR</td>
+<td>logical <code>/\ \/ =&gt; iff</code></td>
+<td>replace with another logical operator</td>
+</tr>
+<tr>
+<td>BCR</td>
+<td>Boolean compound expression</td>
+<td>replace with <code>true</code> or <code>false</code></td>
+</tr>
+<tr>
+<td>UOD / UOI</td>
+<td>unary <code>-</code>, <code>not</code></td>
+<td>delete an existing operator, or insert one at an integer or Boolean variable</td>
+</tr>
+<tr>
+<td>LIT</td>
+<td>integer and Boolean literals</td>
+<td>$k \mapsto k \pm 1$; flip a Boolean</td>
+</tr>
+<tr>
+<td>VAR</td>
+<td>variable reference</td>
+<td>replace with another in-scope variable of the same type</td>
+</tr>
+<tr>
+<td>OSW</td>
+<td>non-commutative binary operator</td>
+<td>swap the operands</td>
+</tr>
+<tr>
+<td>IFX</td>
+<td>conditional expression</td>
+<td>swap the branches; negate the condition</td>
+</tr>
+<tr>
+<td>IDX</td>
+<td>sequence index</td>
+<td>$i \mapsto i \pm 1$</td>
+</tr>
+<tr>
+<td>FLD</td>
+<td>field projection, including assignment targets</td>
+<td>use another field of the same type</td>
+</tr>
+<tr>
+<td>COL</td>
+<td>sequence, set or record literal</td>
+<td>delete an element; swap adjacent elements; swap two fields of the same type</td>
+</tr>
+<tr>
+<td>CMP / QNT</td>
+<td>comprehension, quantifier</td>
+<td>drop the <code>@</code> term when that preserves the element type; swap among <code>forall</code>/<code>exists</code>/<code>exists1</code> (a compound predicate is covered by BCR)</td>
+</tr>
+<tr>
+<td>SDL / SSW / SIF / ASG</td>
+<td>statements</td>
+<td>delete a statement or replace it with <code>skip</code>; swap adjacent statements; swap <code>if</code> branches or negate the condition; assign to another variable of the same type</td>
+</tr>
+</tbody>
+</table>
+<p>Two kinds of mutant are pruned because they are equivalent by construction.
+The first swaps two operands, elements, branches or statements whose parse
+trees are equal. The second deletes a set element that has a structurally
+equal duplicate. When two operators produce the same mutant text, only the
+first is kept.</p>
+<h2 id="3-mutation-tool-claims">3. Mutation tool claims</h2>
+<p>These claims make the mutants trustworthy as mutants: each is a well-formed,
+single, type-correct change, and the tool's parser groups operators the same
+way RoboTool does. T1–T3 are property tests in <code>src/tests/mutate.rs</code>. T4 is
+checked by the campaign run.</p>
+<p><strong>T1 — Printing and reparsing preserves the syntax tree.</strong> If the tool's
+parser reads a source text, and its printer writes that tree back out with full
+parentheses, then parsing the printed text gives the same tree. Here "the same"
+ignores source positions and redundant parentheses. This round trip shows that
+the parser and printer agree about how operators group, and it makes the fully
+parenthesised text a valid control for T4.</p>
+<p><strong>T2 — Each mutant is one real, local change.</strong> Every mutant parses. Its syntax
+tree differs from the original's, and every difference lies inside the site
+that the operator targeted.</p>
+<p>Precisely: if an operator rewrites the node at tree path $p$ of source $s$ to
+give mutant $m$, then the set of tree paths at which $s$ and $m$ differ is
+non-empty, and each of those paths starts with $p$.</p>
+<p><strong>T3 — Each mutant keeps the original's type.</strong> A mutant of an integer
+expression is still an integer expression, and a Boolean one is still Boolean.
+In a mutated statement, every assignment still assigns a value of the
+variable's declared type. The types come from the tool's own inference, built
+from the row's declared variables and record types, not from RoboTool's type
+checker. The number of mutants RoboTool rejects (stillborn) measures how far
+the two disagree.</p>
+<p><strong>T4 — Parenthesising the source does not change any verdict.</strong> For every
+baseline row, a control copy with its source fully parenthesised still passes
+FDR. The parenthesised text fixes the grouping that the tool's parser chose.
+So RoboTool groups operators the same way, at least as far as each row's
+inputs can reveal, and the check does not depend on surface syntax. A failing
+control would point to a parser or harness bug, not a weak row.</p>
+<p><strong>T5 — Controls check that the context preserves sampled row distinctions.</strong>
+Two samples test this requirement within the chosen input domains. Every sampled killed fault class, which some
+row distinguishes, must also be distinguished by the contextual check. Inadmissible input contexts and timeouts can prevent the requirement from
+being established.
+Every sampled parenthesised copy of a source, which is equivalent by T1, must
+be judged equivalent.</p>
+<h2 id="assumptions-and-limits">Assumptions and limits</h2>
+<ul>
+<li><strong>A1 — Coupling.</strong> The translator faults of interest are first-order
+  substitutions of a construct's meaning in the Python translation, which
+  source mutations can represent observationally. The campaign does not
+  mutate the translator implementation and makes no claim about other
+  Python-translation faults.</li>
+<li><strong>A2 — Determinism.</strong> The generator, RoboTool and FDR are deterministic for a
+  fixed input.</li>
+<li><strong>A3 — Finite domains.</strong> Verdicts hold within the finite bounds that
+  <code>prepare_fdr</code> derives from case values and RoboTool bound expressions. G24
+  tests the initial literal/fixture sizing without FDR. A
+  literal mutation can widen those bounds. RoboTool's arithmetic <em>saturates</em>
+  outside the bounds: for example,
+  <code>Plus(e1,e2,T) = if member(e1+e2,T) then e1+e2 else e1</code>, and likewise for
+  <code>Minus</code>, <code>Mult</code>, <code>Div</code>, <code>Modulus</code> and <code>Neg</code>. Saturation is part of RoboTool's
+  semantics and is tested as it is. A check is only faithful while no value it
+  computes leaves the bounds, so the bounds must contain every value a case
+  reaches, including intermediate ones. <code>prepare_fdr</code> therefore extends the
+  bounds beyond the case's literals and fixture values: it evaluates RoboTool's
+  own bound expressions with plain arithmetic, one set of values per operator
+  application (so intermediate results count), with constants at their fixture
+  values and variables over the case's range, and only indices within a
+  sequence's length. Only the size of the types changes. When that evaluation
+  is not possible (it fails, takes over 60 seconds, or the project has several
+  packages), the case range is kept. <code>testsuite-runner verify</code> then reruns every check
+  with wider bounds and reports a verdict that changes as <code>bounds_too_narrow</code>.
+  A stable verdict after one widening is a sensitivity check, not proof that
+  every reachable intermediate value is within the bounds. Sequential updates
+  and failed sizing evaluations can still leave gaps. Bounds-dependent
+  campaign results are inconclusive, not evaluation-error detections. A
+  failed widening recheck is also inconclusive in the mutation report, even
+  when the single-case runner retains the first verdict in its CSV category. The
+  historical widening control below measured the earlier, literal-only bounds.</li>
+<li><strong>A4 — Relative to the baseline.</strong> Nothing here shows that a row's expected
+  output is correct. The campaign claims concern baseline rows under the
+  current oracle. A passing row records agreement between its Python output
+  and the source oracle on that fixture; it does not establish translator
+  correctness on other inputs.</li>
+<li><strong>A5 — Reference typing.</strong> T3 is checked against the tool's own type
+  inference, not RoboTool's. Mutants that RoboTool rejects are counted as
+  stillborn and excluded from every score.</li>
+<li><strong>A7 — Equivalence depends on the bounded oracle.</strong> C4 compares source
+  models translated by RoboTool and checked by FDR. It does not compare Python
+  translations. An oracle defect can collapse distinct source behaviours,
+  producing false equivalence, or distinguish behaviours incorrectly. See
+  <a href="robotool-bugs.md">oracle defects and limitations</a>, especially B1–B4.
+  Passing baseline rows constrain this only on their own observations.
+  Witnesses also require oracle validation before they justify new rows.
+  Equivalence holds only within the finite input domains, including any
+  explicitly listed values for a type.</li>
+<li><strong>A6 — Generated rows.</strong> G6–G28 hold for the rows the property tests
+  generate. These cover integers, naturals, Booleans, nested sequences, records
+  up to three per schema, up to five variables, output and input events,
+  drivers, constants and bounded iteration. They do not cover explicit value
+  domains or helper-function fixtures.</li>
+</ul>
+<h2 id="results">Results</h2>
+<h3 id="current-campaign-with-expression-based-bounds">Current campaign with expression-based bounds</h3>
+<p>The complete run covers the original 294-row baseline, 294 parenthesised
+controls and 2,665 mutants. All originals and controls verify, and all 2,959
+mutant/control models pass the source-transport comparison (G8).</p>
+<p>The initial completed attempt exposed a harness lexer defect: negative
+constant domains in the sizing-only CSP were written <code>{-3}</code>, opening a
+multiline comment. That attempt is preserved in
+<code>target/mutation-sizing-fallback/</code>. After fixing the literal to <code>{ -3}</code>,
+all 893 affected cases were rechecked in separate projects. Their models and
+checks were compared byte-for-byte before verification. The other 2,360
+results were retained: they have no negative constant domain affected by this
+fix. <code>target/mutation/negative-constant-rerun.json</code> records this provenance.
+Canonical CSV inputs and expected outputs were unchanged.</p>
+<table>
+<thead>
+<tr>
+<th>Mutant outcome</th>
+<th style="text-align: right;">Historical literal bounds</th>
+<th style="text-align: right;">Current bounds</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Killed by refinement</td>
+<td style="text-align: right;">1,439</td>
+<td style="text-align: right;">1,485</td>
+</tr>
+<tr>
+<td>Survived</td>
+<td style="text-align: right;">1,149</td>
+<td style="text-align: right;">1,058</td>
+</tr>
+<tr>
+<td>Recognised evaluation error</td>
+<td style="text-align: right;">77</td>
+<td style="text-align: right;">77</td>
+</tr>
+<tr>
+<td>Inconclusive oracle/harness result</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">45</td>
+</tr>
+<tr>
+<td>Rejected or missing</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">0</td>
+</tr>
+</tbody>
+</table>
+<p>The current refinement score over decided mutant verdicts is 58%. Of the
+45 inconclusive mutants, 43 have bounds-dependent verdicts; two could not
+complete their widening recheck. The latter retain first-pass categories
+<code>verified</code> and <code>fdr_mismatch</code> in the single-case runner's CSV, but the mutation
+report excludes them from reliable survivors and kills.</p>
+<p>At suite level, the 591 fault classes contain:</p>
+<ul>
+<li>476 detected by refinement;</li>
+<li>39 detected only by a recognised evaluation error;</li>
+<li>55 undetected and reviewed as equivalent;</li>
+<li>18 undetected without a reviewed equivalence;</li>
+<li>3 inconclusive classes with no reliable detection in another row.</li>
+</ul>
+<p>Over the 536 classes not reviewed equivalent, detection is a lower bound of
+89% by refinement and 96% including evaluation errors. Evaluation-error
+sensitivity has the additional condition stated in C1. A class with a reliable
+kill in another row remains detected even if some of its rows are inconclusive.
+These are source-mutation results, not measured defects in the Python translator.</p>
+<p>The three unresolved classes are <code>flags[2]</code> → <code>flags[(2) + 1]</code>, multiplication
+in <code>sequence</code>'s second assignment, and <code>sample</code> → <code>-sample</code> in
+<code>prob_mask_update</code>'s comparison. The current 18 undetected classes comprise
+10 in <code>conditional</code>, 6 in <code>prob_mask_update</code>, 1 in <code>bounded_scan</code> and 1 in
+<code>input_event</code>. Their stronger-input proposals remain pending actual Python
+observations and user approval.</p>
+<p>The full current artefacts, in the campaign directory, are <code>report.md</code>, <code>outcomes.csv</code>,
+<code>manifest.csv</code>, and the per-shard logs. Some arithmetic inside Boolean
+comparisons is omitted from RoboTool's bound expressions; this is one source
+of the remaining bounds-sensitive outcomes. The FDR sizing helper and one
+widening recheck are not complete reachable-value analysis.</p>
+<h3 id="current-contextual-equivalence-rerun-c4-t5">Current contextual-equivalence rerun (C4, T5)</h3>
+<p>The final run used 12 jobs and 15 controls of each kind. It checked 106 pairs:
+76 class representatives without reliable campaign detections, plus 30
+controls. Complete traces and event payloads are retained in the witnesses;
+<code>mutate equiv-witnesses --equiv-out mutation-equivalence</code> can refresh
+those fields from completed FDR logs without rerunning or changing verdicts.</p>
+<table>
+<thead>
+<tr>
+<th>Class representatives</th>
+<th style="text-align: right;">Pairs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Equivalent within the selected oracle domains</td>
+<td style="text-align: right;">56</td>
+</tr>
+<tr>
+<td>Distinguished, with witnesses</td>
+<td style="text-align: right;">17</td>
+</tr>
+<tr>
+<td>Inconclusive because the original cannot execute in the context</td>
+<td style="text-align: right;">2</td>
+</tr>
+<tr>
+<td>Timed out</td>
+<td style="text-align: right;">1</td>
+</tr>
+</tbody>
+</table>
+<p>All 55 manually reviewed equivalents were confirmed. The additional
+equivalent is <code>lidar_range</code>'s <code>size(.ranges)</code> → <code>size(.intensities)</code> within
+the declared <code>LidarRange</code> values, whose two sequence fields have equal
+lengths. This does not establish equivalence for readings with different
+field lengths.</p>
+<p>The 17 distinctions comprise 10 <code>conditional</code> classes and 7
+<code>prob_mask_update</code> classes. The latter includes the negated-sample class that
+was bounds-sensitive in the campaign. Traces confirm the proposed boundary
+inputs <code>x = 0</code> and <code>1</code>, and <code>threshold = 4</code> and <code>5</code> with
+<code>mask = (&lt;1, 4, 2&gt;, -1)</code>. Some conditional mutations also need a different
+initial <code>y</code>; the <code>skip</code> witness has <code>x = 3, y = 0</code>. These are oracle witnesses,
+not newly generated Python expectations, so no corpus rows were added.</p>
+<p><code>typed_boolean_sequence</code> remains inconclusive because some sequence inputs
+are too short for the original's index. <code>bounded_scan</code> remains inconclusive
+because the generic sequence context admits values outside the fixture's
+explicit sequence domain, producing an invalid original output event.
+The sequence-statement multiplication pair exceeded its 300-second FDR limit.
+It remains unresolved; the run does not prove equivalence for that pair.</p>
+<p><strong>T5 controls:</strong> all 15 killed controls were distinguished, including one by
+an evaluation error with a separately successful original check. Of the 15
+parenthesised controls, 13 were equivalent; <code>a cat b</code> and <code>{a to b}</code> timed out.
+Every completed control agreed. These timeouts prevent claiming that all
+controls were decided, and the inadmissible-context results limit coverage.</p>
+<p>The final artefacts are <code>target/equivalence-bounds/report.md</code>, <code>results.csv</code>
+and <code>pairs/*/fdr.log</code>; <code>target/equivalence-final.status</code> is <code>0</code>. The interrupted
+attempt is preserved separately. Equivalence remains a result about the
+bounded oracle and selected inputs, not about Python translations.</p>
+<h3 id="generator-properties-g1g26-g29g31">Generator properties (G1–G26, G29–G31)</h3>
+<pre><code># in a checkout of the code repository
+cargo test --release --workspace
+PROPTEST_CASES=10000 cargo test --release --workspace
+</code></pre>
+<p>All 29 properties hold at their default case counts (512 or 1,024; 128 for
+G24 and G25) and at 10,000 cases each in a stress run. G17 made one rule
+explicit: a row whose iteration count is 0 never embeds its source, so it
+cannot test its statement. The corpus row <code>bounded_scan/empty</code> is such a row,
+which is why all its mutants survive. Every early failure was an error in a
+test:</p>
+<ul>
+<li>a variable named <code>count</code> collided with the iteration fixture's JSON key in a
+  model comment;</li>
+<li>three properties (G1, G9 and G15) discarded too many generated cases as
+  inapplicable. They now pass inapplicable cases vacuously.</li>
+</ul>
+<h3 id="whole-pipeline-g27-g28">Whole pipeline (G27, G28)</h3>
+<pre><code># in a checkout of the code repository
+cargo test --release -p testsuite-runner pipeline_properties
+ROBOTOOL_HOME=… FDR_REFINES=… cargo test --release -p testsuite-runner pipeline_properties -- --ignored
+</code></pre>
+<ul>
+<li><strong>G27</strong> holds at 64 cases by default and at 1,000 cases in a stress run.</li>
+<li><strong>G28 found two generator defects. Both are fixed, and G28 now passes 16
+  cases (each up to 8 rows) in 3.5 minutes in the historical run. The ignored
+  pipeline tests passed again in this continuation.</strong></li>
+<li><strong>Defect 1: sequences starting with a negative number.</strong> The generator
+  wrote such a sequence as <code>&lt;-1&gt;</code> or <code>&lt;-3, -2&gt;</code>. RoboChart's lexer
+  reads <code>&lt;-</code> as one token, so RoboTool rejects the model
+  (<code>mismatched character '1' expecting '&gt;'</code>). The shrunk counterexample is a
+  statement row with the constant <code>cmd : Seq(int) = &lt;-1&gt;</code>. Both writers of
+  RoboChart sequence literals have the defect: <code>Fixtures::robo_literal</code> for
+  typed rows and <code>value_literal</code> for untyped expression rows. The corpus row
+  <code>lambda_False/000</code> fails for this reason (its fixture declares
+  <code>const apply : Seq(int) = &lt;-1&gt;</code>). It was reported as a RoboChart
+  validation error, which suggests the lambda syntax is at fault. CSPm has
+  the same token, so FDR rejects the same values in check scripts
+  (<code>Unexpected token &lt;-</code>). The fix writes a space after <code>&lt;</code> when the first
+  element is negative (<code>&lt; -1&gt;</code>), in both literal writers. Across the corpus it
+  changes exactly one model and one check script, those of
+  <code>lambda_False/000</code>. G29 guards against the defect returning.</li>
+</ul>
+<p>With only the literal fix, <code>lambda_False/000</code> translated, and then failed in FDR in the
+  same way as its sibling <code>lambda_False/001</code>. The lexer defect was hiding a
+  problem in the translation table itself. The <code>lambda_False</code> rows record a
+  number: the result of applying <code>lambda x: int @ x + 1</code> to the input
+  <code>apply</code>. But the source is the lambda itself, not an application, so
+  the earlier generator output the function (a set of pairs in CSP) on an
+  <code>int</code> channel inferred from the expected application value. FDR reported
+  a type error.</p>
+<p>Resolved in the context: the current generator observes graph slices with
+  <code>rimage</code> and copies the existing recorded application results into its
+  checks. All six original rows pass without changing the data. B1 and B2
+  remain oracle findings from separate reproductions. Current rows do not
+  observe partial-lambda domain exclusion and therefore do not expose B2.
+- <strong>Defect 2: an inflated sequence bound.</strong> <code>prepare_fdr</code> took the sequence
+  bound from the longest JSON array anywhere in the row, including the driver
+  script and the expected event trace, which are lists of steps. A row with a
+  three-step driver got bound 3 instead of 2. For types such as <code>Seq(Spin)</code>,
+  where <code>Spin</code> holds a <code>Seq(boolean)</code>, that multiplies the finite domain by
+  about 60, and FDR ran for over 25 minutes without finishing. The fix takes
+  the bound from fixture values only: inputs, the expected state, and event
+  and driver payloads. G24 now also checks that the bound is not larger than
+  needed, and it fails on the unfixed code. No corpus row's bound changes.</p>
+<h3 id="historical-campaign-with-literal-bounds-c1c3-and-g8-at-scale">Historical campaign with literal bounds (C1–C3, and G8 at scale)</h3>
+<p>These are the earlier reporter’s counts, retained for comparison. The
+new-bounds run below separates oracle instability from detections.</p>
+<p>The campaign ran <code>mutate all --baseline
+&lt;testsuite-project&gt;/verify-isolated-results.csv</code> (the file is now named
+<code>verification-results.csv</code>), 8 shards, in 25 minutes. It
+used RoboTool 1.2.2026062401 and FDR 4.2.7 on Codex's working tree of
+2026-09-30. The artefacts are in <code>target/mutation-literal-bounds/</code>: <code>report.md</code>,
+<code>outcomes.csv</code> and <code>manifest.csv</code>.</p>
+<ul>
+<li><strong>Baseline.</strong> 294 rows. All 294 verified again in the same run.</li>
+<li><strong>G8 at scale.</strong> All 2,959 generated mutant and control models equal their
+  row's model with only the embedded source substituted, and their check
+  scripts are identical up to id-derived names.</li>
+<li><strong>Stillborn.</strong> 0: RoboTool accepted every type-preserving mutant.</li>
+<li><strong>Mutant level (C1, C2).</strong> 2,665 mutants: 1,439 killed, 1,149 survived and 77
+  detected by evaluation error (44 divisions by zero, 27 values outside a
+  channel type, 6 out-of-range sequence indices). The per-row score is 56%.</li>
+<li><strong>Suite level (C3).</strong> 591 fault classes:</li>
+<li>477 killed by refinement;</li>
+<li>39 detected only by an evaluation error;</li>
+<li>55 undetected and reviewed as equivalent;</li>
+<li>20 undetected and not equivalent.</li>
+</ul>
+<p>Over the 536 non-equivalent classes, the corpus detects <strong>89% by refinement
+  and 96% including evaluation errors</strong>.</p>
+<p>Equivalent classes (55, in <code>docs/mutation-equivalent.csv</code>):</p>
+<ul>
+<li>47 are in <code>short_circuit_and</code>, <code>short_circuit_or</code> and <code>conditional_lazy</code>.
+  They mutate the operand the row requires to stay unevaluated. These rows
+  test laziness, not the dead operand.</li>
+<li>4 are <code>a is int</code> with <code>a : int</code>, which is constantly true.</li>
+<li>2 change a duplicated set element.</li>
+<li>1 is <code>x == 2</code> → <code>x &lt;= 2</code>, which is reached only when <code>x &gt;= 2</code>.</li>
+<li>1 swaps two independent assignments.</li>
+</ul>
+<p>The 20 remaining undetected classes are weak contexts, with concrete fixes:</p>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th style="text-align: right;">Undetected</th>
+<th>Cause</th>
+<th>Strengthening</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>conditional</code></td>
+<td style="text-align: right;">10</td>
+<td>The only <code>pass</code> row has <code>x = -1</code>, so the then-branch and the boundary are never tested.</td>
+<td>Add <code>pass</code> rows with <code>x = 1</code> and <code>x = 0</code>.</td>
+</tr>
+<tr>
+<td><code>prob_mask_update</code></td>
+<td style="text-align: right;">7</td>
+<td><code>sample = 4</code>, <code>threshold = 3</code> gives only one strict outcome. One survivor, <code>(-sample) &gt;= threshold</code>, is a saturation artefact (see below).</td>
+<td>Add rows with <code>threshold = 4</code> (equality) and <code>threshold = 5</code> (false).</td>
+</tr>
+<tr>
+<td><code>bounded_scan</code></td>
+<td style="text-align: right;">1</td>
+<td><code>ranges = [1,2,3]</code> makes <code>total = i + ranges[i]</code> agree with the correct sum on the last step.</td>
+<td>Use non-identity values such as <code>[2,5,7]</code>.</td>
+</tr>
+<tr>
+<td><code>input_event</code> (<code>lidar_range</code>)</td>
+<td style="text-align: right;">1</td>
+<td><code>ranges</code> and <code>intensities</code> have the same length, so <code>size(.intensities)</code> equals <code>size(.ranges)</code>.</td>
+<td>Give the fixture's <code>intensities</code> a different length.</td>
+</tr>
+<tr>
+<td><code>typed_boolean_sequence</code></td>
+<td style="text-align: right;">1</td>
+<td><code>flags[(2) + 1]</code>: <code>Plus(2,1,core_nat)</code> saturates to <code>2</code> because <code>core_nat = {0..2}</code>, so the mutant reads <code>flags[2]</code>. The literal <code>flags[3]</code> is caught as an evaluation error.</td>
+<td>Extend the finite domain and classify bounds instability separately.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="historical-contextual-equivalence-c4-t5">Historical contextual equivalence (C4, T5)</h3>
+<pre><code>ROBOTOOL_HOME=… FDR_REFINES=… mutate equiv --out mutation-campaign --controls 15
+</code></pre>
+<p>The run decided 105 pairs in 5 minutes with 12 jobs: one
+representative of each of the 75 undetected fault classes, and 15 controls of
+each kind. The artefacts are in <code>target/equivalence/</code>: <code>report.md</code>,
+<code>results.csv</code>, and one project directory per pair with its FDR log.</p>
+<ul>
+<li><strong>T5.</strong> All 15 killed controls were distinguished (one by evaluation error).
+  13 of 15 parenthesised controls were judged equivalent. The other 2 (<code>a cat b</code>
+  and <code>{a to b}</code>) exceeded the 300-second limit: sequence and set values are
+  large at these bounds.</li>
+<li><strong>C4, equivalent: 56.</strong> All 55 classes reviewed by hand as equivalent are
+  confirmed. The 56th is <code>lidar_range</code>'s <code>size(reading.ranges)</code> →
+  <code>size(reading.intensities)</code>, which is equivalent within the row's declared
+  <code>LidarRange</code> values: every listed reading has <code>ranges</code> and <code>intensities</code> of
+  equal length.</li>
+<li><strong>C4, distinguished: 17.</strong> These are exactly the weak contexts in
+  <code>conditional</code> (10) and <code>prob_mask_update</code> (7), each with a witness:</li>
+<li><code>conditional</code> (<code>if x &gt; 0 then y = 1 else y = 2 end</code>): <code>x = 1</code> for the
+    then-branch mutants, <code>x = 0</code> for the boundary mutants (<code>x &gt; -1</code>,
+    <code>x == 0</code>, <code>x &gt;= 0</code>), and <code>x = 3, y = 0</code> for the mutant that replaces the
+    then-branch with <code>skip</code>.</li>
+<li><code>prob_mask_update</code> (<code>above = sample &gt;= threshold</code>): <code>threshold = 5</code> (false)
+    or <code>threshold = 4</code> (equality), with <code>mask = (&lt;1, 4, 2&gt;, -1)</code>.</li>
+</ul>
+<p>These are the rows the corpus should add. They match the manual suggestions
+  above, now with evidence.
+- <strong>C4, inconclusive: 2.</strong> <code>bounded_scan</code> and <code>typed_boolean_sequence</code>. In
+  some contexts the original itself indexes past the end of its sequence
+  input, so the context breaks the source's precondition (a sequence long
+  enough for its index). Handling these needs contexts restricted to inputs
+  that meet the precondition.</p>
+<p>The first two runs of this step found three errors in the context, each caught
+by the controls:</p>
+<ul>
+<li>integer inputs that did not cover the rows' own values (<code>x = 3</code>);</li>
+<li>sequence outputs longer than the bound;</li>
+<li>an input process that repeated the variable reads, so both sides deadlocked
+  before the action and every statement pair looked equivalent.</li>
+</ul>
+<p>In the third run, all completed controls agreed; two parenthesised controls
+timed out. The new-bounds rerun must be reported separately.</p>
+<h3 id="historical-saturation-a3-widening-control">Historical saturation (A3) widening control</h3>
+<p>The control re-ran the 476 surviving mutants whose source or mutant contains
+integer arithmetic, with their 181 originals and controls, under
+<code>domains.int = [-12, 12]</code>. Features with set- or sequence-valued outputs were
+excluded because widening <code>int</code> makes their channel types grow exponentially.
+Three further survivors were re-run by hand. The artefacts are in
+<code>target/mutation-wide/</code> and <code>target/mutation-wide3/</code>.</p>
+<ul>
+<li><strong>Baseline unaffected.</strong> All 181 originals and 181 controls still verify.</li>
+<li><strong>Row-level masking.</strong> 101 of the 476 survivors (21%) become killed. Most are
+  <code>UOI</code> negations and <code>VAR</code> substitutions in the arithmetic and comparison
+  features, whose intermediate values fall outside the literal-derived bounds
+  and saturate. One more is <code>prob_mask_update</code>'s <code>(-sample) &gt;= threshold</code>.
+  Also, <code>flags[(2) + 1]</code> now fails with an out-of-range index, like the
+  literal <code>flags[3]</code>.</li>
+<li><strong>Suite-level effect: none.</strong> Every class that widening unmasked had already
+  been killed by another row of its feature. The counts are unchanged at
+  477 killed, 39 detected by evaluation error, 55 equivalent and 20
+  undetected.</li>
+</ul>
+<p>So in this corpus saturation weakens individual rows but hides no fault class
+from the suite. That is a property of the current rows, not a guarantee. A row
+whose only discriminating value lies outside the bounds would be masked
+silently. The current harness adds the following checks, which reduce the
+gap without proving reachable-value coverage:</p>
+<ul>
+<li><code>prepare_fdr</code> evaluates RoboTool bound expressions with ordinary arithmetic
+  for sizing, collecting intermediate results as well as case values.</li>
+<li><code>verify</code> widens the bounds and reports changed verdicts as
+  <code>bounds_too_narrow</code>. These results remain inconclusive.</li>
+</ul>
+<p>For example, with <code>a = 2</code>, a correct translation of <code>a * a * a / 4</code> fails its
+check: the bounds are <code>{ -2..4}</code>, so the intermediate <code>8</code> saturates and the
+output is <code>1</code> instead of <code>2</code>.</p>
+<h3 id="mutation-tool-t1t4">Mutation tool (T1–T4)</h3>
+<p>The continuation also adds regressions ensuring that oracle bounds instability,
+failed widening rechecks and load failures are excluded from detections. A CSP
+evaluation error counts only when its log identifies an evaluation failure.
+The fast test run passes 38 generator/unit tests, 10 mutation-tool tests and
+1 pipeline property. The FDR tests verify trivial fixture observations, reject
+a corrupted lambda graph check, and check expression-based bound computation
+with a negative fixture constant and an intermediate negation. Each has passed
+when run explicitly.</p>
+<pre><code>cargo test --release
+mutate check --data ../robochart-python-testsuite/data
+</code></pre>
+<ul>
+<li><strong>T1–T3 on random programs.</strong> Six properties hold at 20,000 cases each. They
+  cover well-typed expressions and statements over integers, Booleans,
+  sequences and a record type, up to depth 3.</li>
+<li><strong>T1–T3 on the corpus.</strong> All 426 corpus rows inside the fragment pass, 4,531
+  mutants in total. Every baseline row parses. The 148 rows outside the
+  fragment (reals, strings, tuples, lambdas, matrices and similar) are all
+  outside the baseline.</li>
+<li><strong>T4.</strong> All 294 fully parenthesised controls verified in the campaign run.</li>
+<li><strong>Defects found in the tool.</strong> Proptest shrank and kept three defects in
+  <code>proptest-regressions/tests/mutate.txt</code>, all now fixed:</li>
+<li>Deleting the only element of <code>&lt;0&gt;</code> produced <code>&lt;&gt;</code>, which the tool's typing
+     treated as untyped. Empty literals are now polymorphic.</li>
+<li>The same gap under indexing and negation: <code>-(&lt;&gt;)[0]</code>.</li>
+<li>The guards against equivalent swaps compared source text, so
+     <code>(s)[1] / s[1]</code> yielded an operand swap identical to the original, a T2
+     violation. The guards now compare parse trees.</li>
+</ul>
+<h3 id="fixture-and-context-generator-extension-2026-10-01">Fixture and context generator extension (2026-10-01)</h3>
+<p>The source cases are the CSVs in <code>ExpressionTests</code>. All 548 original expression
+rows retain their source expressions, inputs and recorded Python outputs.
+Native pair-tuple, vector and matrix encodings, bounded-interval membership
+observations, finite binder domains and exact integral real literals are now
+supported. The complete affected-row check contains 93 existing cases:
+20 finite-domain comprehensions, 64 bounded intervals, six exact quotients,
+and one tuple, vector and matrix. All pass single-case RoboTool/FDR verification
+and wider-bound rechecks (<code>target/context-affected/results.csv</code>). Interval
+checks observe finite integer membership; they do not establish fidelity of
+Python interval-object identity. Fractional reals, unsupported source syntax,
+missing fixture environments, and unsupported RoboTool expressions remain
+separate limitations. No new expected outputs were calculated or added.</p>
+<h3 id="required-scope-and-supplementary-examples">Required scope and supplementary examples</h3>
+<p>Required scope follows the supplied ExpressionTests cases. The three typed
+expression examples now live in <code>data/supplementary_expression_cases.csv</code> of the testsuite and
+run as a separate expression corpus. <code>data/cases.csv</code> retains the 548 original
+expression rows. The statement CSV also includes 22 added examples besides
+its six source cases; those additions do not define required scope. Historical
+campaign scores include these supplementary examples and must not be read as
+coverage scores for the original expression cases alone. Remaining work on
+nested records, robot events, or mask/scan examples is supplementary regression
+coverage unless a supplied source case independently requires it.</p>
+<p>Sequence alignment uses core literals, indexing, <code>cat</code>, <code>^</code>, and <code>size</code>.
+Generated contexts import only the <code>size</code> declaration, which RoboTool compiles
+to CSP's native sequence length, rather than relying on toolkit helper
+implementations. The independent checks are recorded under
+<code>target/scope-sequences/</code> and <code>target/scope-supplementary/</code>.</p>
+</main>
+</body>
+</html>
